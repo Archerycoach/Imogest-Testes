@@ -1,94 +1,72 @@
 import type { NextApiRequest, NextApiResponse } from "next";
-import { google } from "googleapis";
 import { supabase } from "@/integrations/supabase/client";
+
+// Get credentials from database
+const getGoogleCredentials = async () => {
+  const { data, error } = await supabase
+    .from("integration_settings")
+    .select("settings")
+    .eq("integration_name", "google_calendar")
+    .single();
+
+  if (error || !data) {
+    console.error("Failed to fetch Google Calendar credentials:", error);
+    return null;
+  }
+
+  const settings = data.settings as any;
+
+  return {
+    clientId: settings?.clientId || "",
+    clientSecret: settings?.clientSecret || "",
+  };
+};
+
+// Dynamic redirect URI based on environment
+const getRedirectUri = (req: NextApiRequest) => {
+  const protocol = req.headers["x-forwarded-proto"] || "http";
+  const host = req.headers["x-forwarded-host"] || req.headers.host || "localhost:3000";
+  return `${protocol}://${host}/api/google-calendar/callback`;
+};
 
 export default async function handler(
   req: NextApiRequest,
   res: NextApiResponse
 ) {
+  if (req.method !== "GET") {
+    return res.status(405).json({ error: "Method not allowed" });
+  }
+
   try {
-    // Get authenticated user
-    const authHeader = req.headers.cookie || "";
-    const accessToken = extractAccessTokenFromCookie(authHeader);
+    // Get credentials from database
+    const credentials = await getGoogleCredentials();
     
-    if (!accessToken) {
-      console.error("No access token found in cookies");
-      return res.redirect("/login?redirect=/admin/integrations&error=not_authenticated");
+    if (!credentials || !credentials.clientId) {
+      return res.status(500).json({ 
+        error: "Google Calendar não está configurado. Por favor configure as credenciais em /admin/integrations" 
+      });
     }
 
-    const { data: { user }, error: userError } = await supabase.auth.getUser(accessToken);
+    const redirectUri = getRedirectUri(req);
     
-    if (userError || !user) {
-      console.error("Failed to get user:", userError?.message);
-      return res.redirect("/login?redirect=/admin/integrations&error=not_authenticated");
-    }
-
-    console.log("User authenticated for OAuth:", user.id);
-
-    const clientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID;
-    const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
-
-    if (!clientId || !clientSecret) {
-      console.error("Missing Google OAuth credentials");
-      return res.redirect("/admin/integrations?google_calendar=error&reason=missing_credentials");
-    }
-
-    // Dynamic redirect URI
-    const host = req.headers.host || "localhost:3000";
-    const isLocalhost = host.includes("localhost") || host.includes("127.0.0.1");
-    const protocol = isLocalhost ? "http" : "https";
-    const redirectUri = `${protocol}://${host}/api/google-calendar/callback`;
-
-    const oauth2Client = new google.auth.OAuth2(
-      clientId,
-      clientSecret,
-      redirectUri
-    );
-
-    const scopes = [
-      "https://www.googleapis.com/auth/calendar",
-      "https://www.googleapis.com/auth/calendar.events",
-    ];
-
-    // Include user_id in state for callback recovery
-    const state = Buffer.from(JSON.stringify({ user_id: user.id })).toString("base64");
-
-    const authUrl = oauth2Client.generateAuthUrl({
-      access_type: "offline",
-      scope: scopes,
-      prompt: "consent",
-      state, // Pass user_id in state
+    console.log("🔐 Google OAuth Init:", {
+      client_id: credentials.clientId ? "✅ Present" : "❌ Missing",
+      redirect_uri: redirectUri,
+      environment: process.env.NODE_ENV,
     });
 
-    console.log("Redirecting to Google OAuth with user_id in state");
-    res.redirect(authUrl);
-  } catch (error: any) {
-    console.error("Error in Google Calendar auth:", error);
-    res.redirect("/admin/integrations?google_calendar=error&reason=unknown");
-  }
-}
+    // Build Google OAuth URL
+    const authUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
+    authUrl.searchParams.append("client_id", credentials.clientId);
+    authUrl.searchParams.append("redirect_uri", redirectUri);
+    authUrl.searchParams.append("response_type", "code");
+    authUrl.searchParams.append("scope", "https://www.googleapis.com/auth/calendar");
+    authUrl.searchParams.append("access_type", "offline");
+    authUrl.searchParams.append("prompt", "consent");
 
-function extractAccessTokenFromCookie(cookieHeader: string): string | null {
-  try {
-    if (!cookieHeader) return null;
-
-    const cookies = cookieHeader.split(";").reduce((acc, cookie) => {
-      const [key, value] = cookie.trim().split("=");
-      if (key && value) {
-        acc[key] = value;
-      }
-      return acc;
-    }, {} as Record<string, string>);
-
-    const authCookieKey = Object.keys(cookies).find(key => 
-      key.startsWith("sb-") && key.endsWith("-auth-token")
-    );
-
-    if (!authCookieKey) return null;
-
-    const authData = JSON.parse(decodeURIComponent(cookies[authCookieKey]));
-    return authData.access_token || null;
+    res.redirect(authUrl.toString());
   } catch (error) {
-    return null;
+    console.error("Error initiating Google OAuth:", error);
+    res.status(500).json({ error: "Failed to initiate Google OAuth" });
   }
 }

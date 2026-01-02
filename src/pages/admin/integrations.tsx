@@ -9,8 +9,8 @@ import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
-import { GoogleCalendarConnect } from "@/components/GoogleCalendarConnect";
 import { supabase } from "@/integrations/supabase/client";
+import { GoogleCalendarConnect } from "@/components/GoogleCalendarConnect";
 import {
   MessageCircle,
   Calendar,
@@ -30,7 +30,7 @@ import {
 } from "lucide-react";
 import {
   getAllIntegrations,
-  updateIntegration,
+  updateIntegrationSettings,
   testIntegration,
   syncToSupabaseSecrets,
   INTEGRATIONS,
@@ -58,133 +58,24 @@ export default function Integrations() {
   const [showPasswords, setShowPasswords] = useState<Record<string, boolean>>({});
   const [formData, setFormData] = useState<Record<string, Record<string, string>>>({});
   const [googleCalendarConnected, setGoogleCalendarConnected] = useState(false);
-  const [checkingGoogleCalendar, setCheckingGoogleCalendar] = useState(true);
 
   useEffect(() => {
     loadIntegrations();
     checkGoogleCalendarConnection();
-    
-    // Check for success/error in URL params
-    const params = new URLSearchParams(window.location.search);
-    const gcStatus = params.get("google_calendar");
-    
-    if (gcStatus === "success") {
-      toast({
-        title: "✅ Google Calendar conectado!",
-        description: "A tua conta do Google Calendar está agora sincronizada.",
-      });
-      // Clean URL
-      window.history.replaceState({}, "", "/admin/integrations");
-      // Force reload connection status after a short delay
-      setTimeout(() => {
-        checkGoogleCalendarConnection();
-      }, 1000);
-    } else if (gcStatus === "error") {
-      const reason = params.get("reason") || "unknown";
-      toast({
-        title: "❌ Erro ao conectar Google Calendar",
-        description: `Motivo: ${reason}. Por favor, tenta novamente.`,
-        variant: "destructive",
-      });
-      window.history.replaceState({}, "", "/admin/integrations");
-    }
   }, []);
-
-  const checkGoogleCalendarConnection = async () => {
-    try {
-      console.log("Checking Google Calendar connection status...");
-      setCheckingGoogleCalendar(true);
-      const { data: { user } } = await supabase.auth.getUser();
-      
-      if (!user) {
-        console.log("No user authenticated");
-        setGoogleCalendarConnected(false);
-        return;
-      }
-
-      console.log("Querying user_integrations for user:", user.id);
-
-      const { data, error } = await supabase
-        .from("user_integrations")
-        .select("*")
-        .eq("user_id", user.id)
-        .eq("integration_type", "google_calendar")
-        .eq("is_active", true)
-        .maybeSingle();
-
-      if (error) {
-        console.error("Error checking Google Calendar connection:", error);
-        throw error;
-      }
-      
-      const isConnected = !!data;
-      console.log("Google Calendar connected:", isConnected);
-      if (data) {
-        console.log("Connection details:", {
-          id: data.id,
-          created_at: data.created_at,
-          token_expiry: data.token_expiry,
-          has_access_token: !!data.access_token,
-          has_refresh_token: !!data.refresh_token,
-        });
-      }
-      
-      setGoogleCalendarConnected(isConnected);
-    } catch (error: any) {
-      console.error("Error checking Google Calendar connection:", error);
-      setGoogleCalendarConnected(false);
-    } finally {
-      setCheckingGoogleCalendar(false);
-    }
-  };
-
-  const handleDisconnectGoogleCalendar = async () => {
-    try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return;
-
-      const { error } = await supabase
-        .from("user_integrations")
-        .update({ is_active: false })
-        .eq("user_id", user.id)
-        .eq("integration_type", "google_calendar");
-
-      if (error) throw error;
-
-      setGoogleCalendarConnected(false);
-      toast({
-        title: "Google Calendar desconectado",
-        description: "A sincronização foi desativada com sucesso.",
-      });
-    } catch (error: any) {
-      toast({
-        title: "Erro ao desconectar",
-        description: error.message,
-        variant: "destructive",
-      });
-    }
-  };
 
   const loadIntegrations = async () => {
     try {
       setLoading(true);
-      console.log("=== LOADING INTEGRATIONS ===");
       const data = await getAllIntegrations();
-      console.log("Integrations loaded from database:", data);
-      console.log("Total integrations:", data.length);
-      console.log("Integration names:", data.map(i => i.integration_name));
-      
       setIntegrations(data);
 
-      // Initialize form data
       const initialFormData: Record<string, Record<string, string>> = {};
       data.forEach((integration) => {
         initialFormData[integration.integration_name] = integration.settings;
       });
       setFormData(initialFormData);
-      console.log("=== INTEGRATIONS LOADED SUCCESSFULLY ===");
     } catch (error: any) {
-      console.error("=== ERROR LOADING INTEGRATIONS ===", error);
       toast({
         title: "Erro ao carregar integrações",
         description: error.message,
@@ -195,19 +86,35 @@ export default function Integrations() {
     }
   };
 
+  const checkGoogleCalendarConnection = async () => {
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+
+      const { data } = await supabase
+        .from("user_integrations")
+        .select("is_active")
+        .eq("user_id", user.id)
+        .eq("integration_type", "google_calendar")
+        .maybeSingle();
+
+      setGoogleCalendarConnected(data?.is_active || false);
+    } catch (error) {
+      console.error("Error checking Google Calendar connection:", error);
+    }
+  };
+
   const handleSave = async (integrationName: string) => {
     try {
       setSaving(integrationName);
       const integration = integrations.find((i) => i.integration_name === integrationName);
       if (!integration) return;
 
-      await updateIntegration(
+      await updateIntegrationSettings(
         integrationName,
-        formData[integrationName] || {},
-        integration.is_active
+        formData[integrationName] || {}
       );
 
-      // Sync to Supabase secrets for Edge Functions
       await syncToSupabaseSecrets(integrationName);
 
       toast({
@@ -255,7 +162,15 @@ export default function Integrations() {
       const integration = integrations.find((i) => i.integration_name === integrationName);
       if (!integration) return;
 
-      await updateIntegration(integrationName, integration.settings, isActive);
+      await updateIntegrationSettings(integrationName, integration.settings);
+      
+      await supabase
+        .from("integration_settings")
+        .update({ 
+          is_active: isActive,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("integration_name", integrationName);
 
       toast({
         title: isActive ? "Integração ativada" : "Integração desativada",
@@ -295,7 +210,6 @@ export default function Integrations() {
     const isTesting = testing === config.name;
     const hasChanges = JSON.stringify(formData[config.name]) !== JSON.stringify(data.settings);
 
-    // Special handling for Google Calendar
     if (config.name === "google_calendar") {
       return (
         <Card key={config.name}>
@@ -308,32 +222,51 @@ export default function Integrations() {
                 <div className="flex-1">
                   <CardTitle className="flex items-center gap-2">
                     {config.displayName}
-                    {checkingGoogleCalendar ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    ) : googleCalendarConnected ? (
+                    {data.is_active && (
                       <Badge variant="default" className="bg-green-500">
                         <Check className="h-3 w-3 mr-1" />
-                        Conectado
+                        Ativa
                       </Badge>
-                    ) : (
-                      <Badge variant="outline" className="text-gray-600 border-gray-600">
-                        Não conectado
+                    )}
+                    {googleCalendarConnected && (
+                      <Badge variant="outline" className="text-green-600 border-green-600">
+                        Conectado ✓
                       </Badge>
                     )}
                   </CardTitle>
                   <CardDescription className="mt-1">{config.description}</CardDescription>
                 </div>
               </div>
+              <Switch
+                checked={data.is_active}
+                onCheckedChange={(checked) => handleToggle(config.name, checked)}
+              />
             </div>
           </CardHeader>
-          <CardContent className="space-y-6">
-            {/* OAuth Configuration Fields */}
-            <div className="space-y-4 p-4 bg-gray-50 dark:bg-gray-900 rounded-lg border border-gray-200 dark:border-gray-700">
-              <div className="flex items-center gap-2 mb-3">
-                <AlertCircle className="h-4 w-4 text-blue-500" />
-                <h4 className="font-medium text-sm">Configuração OAuth (Opcional)</h4>
-              </div>
-              
+          <CardContent className="space-y-4">
+            <div className="p-4 bg-blue-50 rounded-lg border border-blue-200">
+              <h4 className="font-semibold mb-2 flex items-center gap-2">
+                <Calendar className="h-4 w-4" />
+                Conexão OAuth
+              </h4>
+              <p className="text-sm text-gray-600 mb-3">
+                Conecte sua conta Google para sincronizar eventos automaticamente
+              </p>
+              <GoogleCalendarConnect
+                isConnected={googleCalendarConnected}
+                onConnect={() => {
+                  setGoogleCalendarConnected(true);
+                  checkGoogleCalendarConnection();
+                }}
+                onDisconnect={() => {
+                  setGoogleCalendarConnected(false);
+                  checkGoogleCalendarConnection();
+                }}
+              />
+            </div>
+
+            <div className="space-y-4 pt-4 border-t">
+              <h4 className="font-semibold">Configuração OAuth 2.0</h4>
               {config.fields.map((field) => {
                 const fieldId = `${config.name}-${field.key}`;
                 const isPassword = field.type === "password";
@@ -341,7 +274,7 @@ export default function Integrations() {
 
                 return (
                   <div key={field.key} className="space-y-2">
-                    <Label htmlFor={fieldId} className="text-sm">
+                    <Label htmlFor={fieldId}>
                       {field.label}
                       {field.required && <span className="text-red-500 ml-1">*</span>}
                     </Label>
@@ -365,85 +298,52 @@ export default function Integrations() {
                       )}
                     </div>
                     {field.helpText && (
-                      <p className="text-xs text-gray-500">{field.helpText}</p>
+                      <p className="text-sm text-gray-500">{field.helpText}</p>
                     )}
                   </div>
                 );
               })}
 
-              <Alert className="bg-blue-50 dark:bg-blue-950 border-blue-200 dark:border-blue-800">
-                <AlertCircle className="h-4 w-4 text-blue-500" />
-                <AlertDescription className="text-xs">
-                  <strong>Nota:</strong> Estas credenciais são opcionais. Se deixares em branco, 
-                  o sistema usará as credenciais configuradas no ficheiro <code>.env.local</code>. 
-                  Só preenche se quiseres usar credenciais diferentes das padrão.
-                </AlertDescription>
-              </Alert>
-
-              <div className="flex items-center gap-2 pt-2">
-                <Button
-                  onClick={() => handleSave(config.name)}
-                  disabled={isSaving || !hasChanges}
-                  variant="outline"
-                  size="sm"
-                  className="flex-1"
-                >
-                  {isSaving && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-                  Guardar Credenciais
-                </Button>
-                {config.testEndpoint && (
-                  <Button
-                    onClick={() => handleTest(config.name)}
-                    disabled={isTesting}
-                    variant="outline"
-                    size="sm"
-                  >
-                    {isTesting && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-                    Testar
-                  </Button>
-                )}
+              <div className="space-y-2">
+                <Label htmlFor={`${config.name}-redirectUri`}>
+                  Redirect URI (Callback URL)
+                </Label>
+                <Input
+                  id={`${config.name}-redirectUri`}
+                  type="url"
+                  placeholder="https://www.imogest.pt/api/google-calendar/callback"
+                  value={formData[config.name]?.redirectUri || ""}
+                  onChange={(e) => handleInputChange(config.name, "redirectUri", e.target.value)}
+                />
+                <p className="text-sm text-gray-500">
+                  URL para onde o Google redireciona após autorização. Use este valor no Google Cloud Console.
+                </p>
               </div>
             </div>
 
-            {/* Connection Status Alert */}
             <Alert>
-              <Calendar className="h-4 w-4" />
-              <AlertDescription>
-                {googleCalendarConnected 
-                  ? "A tua conta do Google Calendar está sincronizada. Os eventos criados no Imogest aparecem automaticamente no teu calendário." 
-                  : "Conecta a tua conta do Google para sincronizar eventos automaticamente."}
+              <AlertCircle className="h-4 w-4" />
+              <AlertDescription className="text-sm">
+                <strong>Como obter credenciais:</strong>
+                <ol className="list-decimal list-inside mt-2 space-y-1">
+                  <li>Acesse o Google Cloud Console</li>
+                  <li>Crie um projeto ou selecione existente</li>
+                  <li>Ative a Google Calendar API</li>
+                  <li>Crie credenciais OAuth 2.0</li>
+                  <li>Configure Redirect URIs corretamente</li>
+                </ol>
               </AlertDescription>
             </Alert>
 
-            {/* OAuth Connection Buttons */}
-            <div className="flex items-center gap-2 pt-2">
-              {googleCalendarConnected ? (
-                <Button
-                  onClick={handleDisconnectGoogleCalendar}
-                  variant="destructive"
-                  className="flex-1"
-                >
-                  <X className="h-4 w-4 mr-2" />
-                  Desconectar
-                </Button>
-              ) : (
-                <GoogleCalendarConnect 
-                  onSuccess={() => {
-                    checkGoogleCalendarConnection();
-                    toast({
-                      title: "✅ Conectado com sucesso!",
-                      description: "Google Calendar está agora sincronizado.",
-                    });
-                  }}
-                  onError={(error) => {
-                    toast({
-                      title: "❌ Erro ao conectar",
-                      description: error,
-                      variant: "destructive",
-                    });
-                  }}
-                />
-              )}
+            <div className="flex items-center gap-2 pt-4">
+              <Button
+                onClick={() => handleSave(config.name)}
+                disabled={isSaving || !hasChanges}
+                className="flex-1"
+              >
+                {isSaving && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                Guardar Configuração
+              </Button>
               <Button variant="ghost" size="icon" asChild>
                 <a href={config.docsUrl} target="_blank" rel="noopener noreferrer">
                   <ExternalLink className="h-4 w-4" />
@@ -577,7 +477,6 @@ export default function Integrations() {
     );
   }
 
-  // Group integrations by category
   const paymentIntegrations = integrations.filter((i) =>
     ["stripe", "eupago"].includes(i.integration_name)
   );
@@ -587,24 +486,6 @@ export default function Integrations() {
   const toolsIntegrations = integrations.filter((i) =>
     ["google_calendar", "google_maps", "firebase"].includes(i.integration_name)
   );
-
-  console.log("=== FILTERED INTEGRATIONS ===");
-  console.log("Payment:", paymentIntegrations.map(i => i.integration_name));
-  console.log("Communication:", communicationIntegrations.map(i => i.integration_name));
-  console.log("Tools:", toolsIntegrations.map(i => i.integration_name));
-  console.log("Google Calendar in tools?", toolsIntegrations.some(i => i.integration_name === "google_calendar"));
-
-  // Find Google Calendar integration explicitly
-  const googleCalendarIntegration = integrations.find(i => i.integration_name === "google_calendar");
-  console.log("=== GOOGLE CALENDAR EXPLICIT CHECK ===");
-  console.log("Found Google Calendar integration:", !!googleCalendarIntegration);
-  if (googleCalendarIntegration) {
-    console.log("Google Calendar data:", {
-      id: googleCalendarIntegration.id,
-      is_active: googleCalendarIntegration.is_active,
-      test_status: googleCalendarIntegration.test_status
-    });
-  }
 
   return (
     <Layout>
@@ -623,8 +504,12 @@ export default function Integrations() {
           </AlertDescription>
         </Alert>
 
-        <Tabs defaultValue="communication" className="space-y-6">
+        <Tabs defaultValue="tools" className="space-y-6">
           <TabsList>
+            <TabsTrigger value="tools">
+              <MapPin className="h-4 w-4 mr-2" />
+              Ferramentas
+            </TabsTrigger>
             <TabsTrigger value="communication">
               <MessageCircle className="h-4 w-4 mr-2" />
               Comunicação
@@ -633,11 +518,14 @@ export default function Integrations() {
               <CreditCard className="h-4 w-4 mr-2" />
               Pagamentos
             </TabsTrigger>
-            <TabsTrigger value="tools">
-              <MapPin className="h-4 w-4 mr-2" />
-              Ferramentas
-            </TabsTrigger>
           </TabsList>
+
+          <TabsContent value="tools" className="space-y-6">
+            {toolsIntegrations.map((integration) => {
+              const config = INTEGRATIONS[integration.integration_name];
+              return config ? renderIntegrationCard(config, integration) : null;
+            })}
+          </TabsContent>
 
           <TabsContent value="communication" className="space-y-6">
             {communicationIntegrations.map((integration) => {
@@ -651,22 +539,6 @@ export default function Integrations() {
               const config = INTEGRATIONS[integration.integration_name];
               return config ? renderIntegrationCard(config, integration) : null;
             })}
-          </TabsContent>
-
-          <TabsContent value="tools" className="space-y-6">
-            {/* Google Calendar - Always render with special component */}
-            {googleCalendarIntegration && (() => {
-              const config = INTEGRATIONS["google_calendar"];
-              return config ? renderIntegrationCard(config, googleCalendarIntegration) : null;
-            })()}
-            
-            {/* Other tools integrations */}
-            {toolsIntegrations
-              .filter(integration => integration.integration_name !== "google_calendar")
-              .map((integration) => {
-                const config = INTEGRATIONS[integration.integration_name];
-                return config ? renderIntegrationCard(config, integration) : null;
-              })}
           </TabsContent>
         </Tabs>
       </div>
