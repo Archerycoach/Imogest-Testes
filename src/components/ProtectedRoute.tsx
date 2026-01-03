@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/router";
-import { supabase } from "@/integrations/supabase/client";
+import { getCurrentSession } from "@/services/authService";
+import { getCurrentUserRole } from "@/lib/auth";
 
 interface ProtectedRouteProps {
   children: React.ReactNode;
-  allowedRoles?: string[]; // Add this prop
+  allowedRoles?: string[];
 }
 
 export function ProtectedRoute({ children, allowedRoles }: ProtectedRouteProps) {
@@ -13,45 +14,57 @@ export function ProtectedRoute({ children, allowedRoles }: ProtectedRouteProps) 
   const [authorized, setAuthorized] = useState(false);
 
   useEffect(() => {
-    checkAuth();
-  }, [router.asPath]);
+    let mounted = true;
 
-  const checkAuth = async () => {
-    try {
-      const { data: { session } } = await supabase.auth.getSession();
-      
-      if (!session) {
-        router.push("/login");
-        return;
-      }
+    const checkAuth = async () => {
+      try {
+        const session = await getCurrentSession();
+        
+        if (!mounted) return;
 
-      // Check roles if specified
-      if (allowedRoles && allowedRoles.length > 0) {
-        const { data: profile } = await supabase
-          .from("profiles")
-          .select("role")
-          .eq("id", session.user.id)
-          .single();
-          
-        if (!profile || !allowedRoles.includes(profile.role)) {
-          router.push("/dashboard"); // Redirect to default dashboard if unauthorized
+        if (!session) {
+          router.push("/login");
           return;
         }
-      }
 
-      setAuthorized(true);
-    } catch (error) {
-      console.error("Auth check failed:", error);
-      router.push("/login");
-    } finally {
-      setLoading(false);
-    }
-  };
+        // Check role if specified
+        if (allowedRoles && allowedRoles.length > 0) {
+          const userRole = await getCurrentUserRole();
+          
+          if (!mounted) return;
+          
+          if (!userRole || !allowedRoles.includes(userRole)) {
+            router.push("/dashboard");
+            return;
+          }
+        }
+
+        if (mounted) {
+          setAuthorized(true);
+          setLoading(false);
+        }
+      } catch (error) {
+        console.error("ProtectedRoute: Auth error:", error);
+        if (mounted) {
+          router.push("/login");
+        }
+      }
+    };
+
+    checkAuth();
+
+    return () => {
+      mounted = false;
+    };
+  }, [router.pathname, allowedRoles]);
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center min-h-screen">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
+          <p className="text-gray-600">A verificar autenticação...</p>
+        </div>
       </div>
     );
   }

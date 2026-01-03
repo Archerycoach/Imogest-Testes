@@ -1,237 +1,132 @@
 import { supabase } from "@/integrations/supabase/client";
 import type { User, Session } from "@supabase/supabase-js";
+import { CacheManager } from "@/lib/cacheInvalidation";
 
-export interface AuthUser {
-  id: string;
-  email: string;
-  user_metadata?: any;
-  created_at?: string;
-}
+// --- Core Auth Functions ---
 
-export interface AuthError {
-  message: string;
-  code?: string;
-}
-
-// Dynamic URL Helper
-const getURL = () => {
-  let url = process?.env?.NEXT_PUBLIC_VERCEL_URL ?? 
-           process?.env?.NEXT_PUBLIC_SITE_URL ?? 
-           'http://localhost:3000'
-  
-  // Handle undefined or null url
-  if (!url) {
-    url = 'http://localhost:3000';
+export const getSession = async (): Promise<Session | null> => {
+  const { data: { session }, error } = await supabase.auth.getSession();
+  if (error) {
+    console.error("Error getting session:", error);
+    return null;
   }
-  
-  // Ensure url has protocol
-  url = url.startsWith('http') ? url : `https://${url}`
-  
-  // Ensure url ends with slash
-  url = url.endsWith('/') ? url : `${url}/`
-  
-  return url
-}
-
-// Individual exported functions
-export async function getCurrentUser(): Promise<AuthUser | null> {
-  const { data: { user } } = await supabase.auth.getUser();
-  return user ? {
-    id: user.id,
-    email: user.email || "",
-    user_metadata: user.user_metadata,
-    created_at: user.created_at
-  } : null;
-}
-
-export async function getCurrentSession(): Promise<Session | null> {
-  const { data: { session } } = await supabase.auth.getSession();
   return session;
-}
+};
 
 // Alias for compatibility
-export const getSession = getCurrentSession;
+export const getCurrentSession = getSession;
 
-export async function signInWithEmail(email: string, password: string): Promise<{ user: AuthUser | null; error: AuthError | null }> {
-  try {
-    const { data, error } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    });
-
-    if (error) {
-      return { user: null, error: { message: error.message, code: error.status?.toString() } };
-    }
-
-    const authUser = data.user ? {
-      id: data.user.id,
-      email: data.user.email || "",
-      user_metadata: data.user.user_metadata,
-      created_at: data.user.created_at
-    } : null;
-
-    return { user: authUser, error: null };
-  } catch (error) {
-    return { 
-      user: null, 
-      error: { message: "An unexpected error occurred during sign in" } 
-    };
+export const getCurrentUser = async (): Promise<User | null> => {
+  const { data: { user }, error } = await supabase.auth.getUser();
+  if (error) {
+    console.error("Error getting user:", error);
+    return null;
   }
-}
+  return user;
+};
 
-export async function signUpWithEmail(email: string, password: string, name?: string): Promise<{ user: AuthUser | null; error: AuthError | null }> {
-  try {
-    const { data, error } = await supabase.auth.signUp({
-      email,
-      password,
-      options: {
-        emailRedirectTo: `${getURL()}auth/confirm-email`,
-        data: name ? { full_name: name } : undefined
-      }
-    });
+export const signInWithEmail = async (email: string, password: string) => {
+  const { data, error } = await supabase.auth.signInWithPassword({
+    email,
+    password,
+  });
+  if (error) throw error;
+  return data;
+};
 
-    if (error) {
-      return { user: null, error: { message: error.message, code: error.status?.toString() } };
-    }
+// Alias for compatibility
+export const signIn = signInWithEmail;
 
-    const authUser = data.user ? {
-      id: data.user.id,
-      email: data.user.email || "",
-      user_metadata: data.user.user_metadata,
-      created_at: data.user.created_at
-    } : null;
-
-    return { user: authUser, error: null };
-  } catch (error) {
-    return { 
-      user: null, 
-      error: { message: "An unexpected error occurred during sign up" } 
-    };
-  }
-}
-
-export async function signInWithOAuth(provider: 'google' | 'github' | 'azure'): Promise<{ error: AuthError | null }> {
-  try {
-    const { error } = await supabase.auth.signInWithOAuth({
-      provider,
-      options: {
-        redirectTo: `${getURL()}auth/callback`,
+export const signUpWithEmail = async (email: string, password: string, fullName?: string) => {
+  const { data, error } = await supabase.auth.signUp({
+    email,
+    password,
+    options: {
+      data: {
+        full_name: fullName,
       },
-    });
-
-    if (error) {
-      return { error: { message: error.message } };
-    }
-
-    return { error: null };
-  } catch (error) {
-    return { 
-      error: { message: "An unexpected error occurred during OAuth sign in" } 
-    };
-  }
-}
-
-export async function signInWithGoogle(): Promise<{ error: AuthError | null }> {
-  return signInWithOAuth('google');
-}
-
-export async function logout(): Promise<{ error: AuthError | null }> {
-  try {
-    const { error } = await supabase.auth.signOut();
-    
-    if (error) {
-      return { error: { message: error.message } };
-    }
-
-    return { error: null };
-  } catch (error) {
-    return { 
-      error: { message: "An unexpected error occurred during sign out" } 
-    };
-  }
-}
+    },
+  });
+  if (error) throw error;
+  return data;
+};
 
 // Alias for compatibility
-export const signOut = logout;
+export const signUp = signUpWithEmail;
 
-export async function resetPassword(email: string): Promise<{ error: AuthError | null }> {
-  try {
-    const { error } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: `${getURL()}auth/reset-password`,
-    });
+export const signInWithGoogle = async () => {
+  const { data, error } = await supabase.auth.signInWithOAuth({
+    provider: "google",
+    options: {
+      redirectTo: `${window.location.origin}/auth/callback`,
+    },
+  });
+  if (error) throw error;
+  return data;
+};
 
-    if (error) {
-      return { error: { message: error.message } };
-    }
+export const signOut = async () => {
+  // Limpar caches antes de sair
+  CacheManager.invalidateAll();
+  
+  const { error } = await supabase.auth.signOut();
+  if (error) throw error;
+};
 
-    return { error: null };
-  } catch (error) {
-    return { 
-      error: { message: "An unexpected error occurred during password reset" } 
-    };
-  }
-}
+// Alias for compatibility
+export const logout = signOut;
 
-export async function updatePassword(password: string): Promise<{ error: AuthError | null }> {
-  try {
-    const { error } = await supabase.auth.updateUser({ password });
+export const updatePassword = async (password: string) => {
+  const { data, error } = await supabase.auth.updateUser({
+    password,
+  });
+  if (error) throw error;
+  return data;
+};
 
-    if (error) {
-      return { error: { message: error.message } };
-    }
+export const resetPassword = async (email: string) => {
+  const { data, error } = await supabase.auth.resetPasswordForEmail(email, {
+    redirectTo: `${window.location.origin}/reset-password`,
+  });
+  if (error) throw error;
+  return data;
+};
 
-    return { error: null };
-  } catch (error) {
-    return { 
-      error: { message: "An unexpected error occurred during password update" } 
-    };
-  }
-}
+export const confirmEmail = async (token_hash: string, type: any = 'signup') => {
+  const { error } = await supabase.auth.verifyOtp({
+    token_hash,
+    type,
+  });
+  if (error) throw error;
+};
 
-export async function confirmEmail(token: string, type: 'signup' | 'recovery' | 'email_change' = 'signup'): Promise<{ user: AuthUser | null; error: AuthError | null }> {
-  try {
-    const { data, error } = await supabase.auth.verifyOtp({
-      token_hash: token,
-      type: type
-    });
-
-    if (error) {
-      return { user: null, error: { message: error.message, code: error.status?.toString() } };
-    }
-
-    const authUser = data.user ? {
-      id: data.user.id,
-      email: data.user.email || "",
-      user_metadata: data.user.user_metadata,
-      created_at: data.user.created_at
-    } : null;
-
-    return { user: authUser, error: null };
-  } catch (error) {
-    return { 
-      user: null, 
-      error: { message: "An unexpected error occurred during email confirmation" } 
-    };
-  }
-}
-
-export function onAuthStateChange(callback: (event: string, session: Session | null) => void) {
+export const onAuthStateChange = (callback: (event: string, session: Session | null) => void) => {
   return supabase.auth.onAuthStateChange(callback);
-}
+};
 
-// Export authService object for backward compatibility
-export const authService = {
-  getCurrentUser,
-  getCurrentSession,
-  getSession,
-  signInWithEmail,
-  signUpWithEmail,
-  signInWithOAuth,
-  signInWithGoogle,
-  logout,
-  signOut,
-  resetPassword,
-  updatePassword,
-  confirmEmail,
-  onAuthStateChange
+export const getUserProfile = async (userId: string) => {
+  const { data, error } = await supabase
+    .from('profiles')
+    .select('*')
+    .eq('id', userId)
+    .single();
+    
+  if (error) throw error;
+  return data;
+};
+
+export const updateUserProfile = async (userId: string, updates: any) => {
+  const { data, error } = await supabase
+    .from('profiles')
+    .update(updates)
+    .eq('id', userId)
+    .select()
+    .single();
+    
+  if (error) throw error;
+  
+  // Invalidar cache do perfil
+  CacheManager.invalidateProfile(userId);
+  
+  return data;
 };
